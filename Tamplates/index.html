@@ -1,0 +1,1066 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>NexConnect — Connect. Create. Earn.</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Sora:wght@400;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.js"></script>
+    <style>
+        :root {
+            --bg-primary: #0f0f12;
+            --bg-secondary: #1a1a21;
+            --bg-tertiary: #25252e;
+            --text-primary: #f8f9fa;
+            --text-secondary: #a0a0b0;
+            --violet: #7C3AED;
+            --indigo: #4F46E5;
+            --emerald: #10B981;
+            --rose: #F43F5E;
+            --border: #2d2d38;
+        }
+        [data-theme="light"] {
+            --bg-primary: #f8f9fa;
+            --bg-secondary: #ffffff;
+            --bg-tertiary: #f1f3f5;
+            --text-primary: #1a1a21;
+            --text-secondary: #6c757d;
+            --border: #dee2e6;
+        }
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+            transition: background-color 0.3s, color 0.3s;
+        }
+        h1, h2, h3, h4, h5 { font-family: 'Sora', sans-serif; }
+        code, .mono { font-family: 'JetBrains Mono', monospace; }
+        .gradient-text {
+            background: linear-gradient(135deg, var(--violet), var(--indigo));
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+        .btn-primary {
+            background: linear-gradient(135deg, var(--violet), var(--indigo));
+            color: white;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+        .btn-primary:hover { transform: translateY(-2px); box-shadow: 0 8px 20px rgba(124, 58, 237, 0.4); }
+        .card {
+            background-color: var(--bg-secondary);
+            border: 1px solid var(--border);
+            border-radius: 16px;
+        }
+        .input-field {
+            background-color: var(--bg-tertiary);
+            border: 1px solid var(--border);
+            color: var(--text-primary);
+            border-radius: 12px;
+            transition: border-color 0.2s;
+        }
+        .input-field:focus { outline: none; border-color: var(--violet); }
+        .nav-link { color: var(--text-secondary); transition: color 0.2s; }
+        .nav-link:hover, .nav-link.active { color: var(--text-primary); }
+        .badge { padding: 4px 10px; border-radius: 20px; font-size: 0.75rem; font-weight: 600; }
+        .spinner {
+            border: 4px solid rgba(255, 255, 255, 0.1);
+            border-left-color: var(--violet);
+            border-radius: 50%;
+            width: 40px; height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { to { transform: rotate(360deg); } }
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: var(--bg-primary); }
+        ::-webkit-scrollbar-thumb { background: var(--bg-tertiary); border-radius: 4px; }
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <div id="toast-container" class="fixed bottom-4 right-4 z-[9999] space-y-2"></div>
+
+    <script>
+        // --- GLOBAL STATE & INIT ---
+        const SUPABASE_URL = 'https://YOUR_PROJECT.supabase.co'; // Placeholder, actually loaded from /api/config
+        const API_BASE = '/api';
+        let sb = null;
+        let state = {
+            session: null,
+            profile: null,
+            settings: null,
+            currentRoute: '/',
+            notifications: []
+        };
+
+        // --- UTILITY FUNCTIONS ---
+        const $ = (sel, parent = document) => parent.querySelector(sel);
+        const $$ = (sel, parent = document) => parent.querySelectorAll(sel);
+
+        function showToast(msg, type = 'success') {
+            const colors = { success: 'bg-emerald-500', error: 'bg-rose-500', info: 'bg-indigo-500' };
+            const toast = document.createElement('div');
+            toast.className = `${colors[type]} text-white px-4 py-3 rounded-lg shadow-lg transform translate-y-full opacity-0 transition-all duration-300 flex items-center gap-2`;
+            toast.innerHTML = `<i data-lucide="${type === 'success' ? 'check-circle' : type === 'error' ? 'alert-circle' : 'info'}" class="w-5 h-5"></i> <span>${msg}</span>`;
+            $('#toast-container').appendChild(toast);
+            lucide.createIcons();
+            setTimeout(() => { toast.classList.remove('translate-y-full', 'opacity-0'); }, 50);
+            setTimeout(() => {
+                toast.classList.add('translate-y-full', 'opacity-0');
+                setTimeout(() => toast.remove(), 300);
+            }, 3000);
+        }
+
+        async function api(path, method = 'GET', body = null) {
+            const headers = { 'Content-Type': 'application/json' };
+            if (state.session) headers['Authorization'] = `Bearer ${state.session.access_token}`;
+            
+            const res = await fetch(`${API_BASE}${path}`, {
+                method,
+                headers,
+                body: body ? JSON.stringify(body) : null
+            });
+            const data = await res.json();
+            if (!res.ok) throw new Error(data.error || 'Something went wrong');
+            return data;
+        }
+
+        // --- AUTH & INITIALIZATION ---
+        async function initApp() {
+            const configRes = await fetch(`${API_BASE}/config`);
+            const config = await configRes.json();
+            sb = supabase.createClient(config.supabase_url, config.supabase_anon_key);
+            
+            const { data: { session } } = await sb.auth.getSession();
+            state.session = session;
+
+            if (session) {
+                await loadProfile();
+                state.settings = await api('/settings');
+            } else {
+                state.settings = await api('/settings');
+            }
+
+            window.addEventListener('hashchange', router);
+            router();
+
+            // Poll notifications
+            if (state.session) {
+                fetchNotifications();
+                setInterval(fetchNotifications, 30000);
+            }
+        }
+
+        async function loadProfile() {
+            try {
+                state.profile = await api('/users/profile');
+            } catch (err) {
+                if (err.message.includes('not found') || err.message.includes('404')) {
+                    // Profile doesn't exist (e.g., OAuth first login), sync it
+                    await api('/auth/sync', 'POST');
+                    state.profile = await api('/users/profile');
+                } else {
+                    console.error(err);
+                }
+            }
+        }
+
+        async function fetchNotifications() {
+            try {
+                state.notifications = await api('/notifications');
+                updateNotificationBell();
+            } catch (e) { console.error("Notification fetch failed", e) }
+        }
+
+        function updateNotificationBell() {
+            const bell = $('#notif-bell');
+            if (!bell) return;
+            const unread = state.notifications.filter(n => !n.is_read).length;
+            if (unread > 0) {
+                bell.classList.add('animate-pulse');
+                bell.setAttribute('fill', 'currentColor');
+            } else {
+                bell.classList.remove('animate-pulse');
+                bell.setAttribute('fill', 'none');
+            }
+        }
+
+        // --- ROUTER ---
+        function router() {
+            const path = window.location.hash.slice(1) || '/';
+            state.currentRoute = path;
+            const app = $('#app');
+            app.innerHTML = '';
+
+            if (!state.session) {
+                app.innerHTML = renderAuth();
+                initAuthListeners();
+                lucide.createIcons();
+                return;
+            }
+
+            if (!state.profile) {
+                app.innerHTML = `<div class="min-h-screen flex items-center justify-center"><div class="spinner"></div></div>`;
+                return;
+            }
+
+            // Onboarding check
+            if (state.profile.role === 'normal_user' && state.profile.follower_count === 0 && state.profile.youtube_link === null && !path.includes('onboarding')) {
+                window.location.hash = '/onboarding';
+                app.innerHTML = renderOnboarding();
+                initOnboardingListeners();
+                lucide.createIcons();
+                return;
+            }
+
+            app.innerHTML = renderLayout(path);
+            initLayoutListeners();
+            
+            // Page specific renders
+            if (path.startsWith('/product/')) renderProductDetail(path.split('/')[2]);
+            else if (path === '/dashboard') renderDashboard();
+            else if (path === '/withdraw') renderWithdraw();
+            else if (path === '/referrals') renderReferrals();
+            else if (path === '/bookmarks') renderBookmarks();
+            else if (path === '/support') renderSupport();
+            else renderHome();
+
+            lucide.createIcons();
+        }
+
+        // --- AUTH VIEWS ---
+        function renderAuth() {
+            return `
+                <div class="min-h-screen flex flex-col md:flex-row">
+                    <div class="hidden md:flex md:w-1/2 bg-gradient-to-br from-violet-600 to-indigo-600 p-12 flex-col justify-between">
+                        <div class="flex items-center gap-2 text-white">
+                            <i data-lucide="zap" class="w-8 h-8"></i>
+                            <span class="text-2xl font-bold" style="font-family:'Sora'">NexConnect</span>
+                        </div>
+                        <div class="text-white">
+                            <h1 class="text-5xl font-extrabold mb-4" style="font-family:'Sora'">Connect. Create. Earn.</h1>
+                            <p class="text-lg opacity-80">Join the ultimate affiliate network. Monetize your audience with high-converting products.</p>
+                        </div>
+                        <div class="text-white opacity-50 text-sm">© ${new Date().getFullYear()} NexConnect. All rights reserved.</div>
+                    </div>
+                    <div class="flex-1 flex items-center justify-center p-6">
+                        <div class="w-full max-w-md card p-8">
+                            <div class="md:hidden flex items-center gap-2 mb-8 justify-center">
+                                <i data-lucide="zap" class="w-8 h-8 text-violet-500"></i>
+                                <span class="text-2xl font-bold gradient-text" style="font-family:'Sora'">NexConnect</span>
+                            </div>
+                            <div id="auth-form-container">
+                                <h2 class="text-2xl font-bold mb-2" style="font-family:'Sora'">Welcome Back</h2>
+                                <p class="text-gray-400 mb-6">Sign in to your account or create a new one.</p>
+                                
+                                <form id="auth-form" class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Email</label>
+                                        <input type="email" id="email" required class="input-field w-full px-4 py-3" placeholder="you@example.com">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Password</label>
+                                        <input type="password" id="password" required class="input-field w-full px-4 py-3" placeholder="••••••••">
+                                    </div>
+                                    <div id="referral-field" class="hidden">
+                                        <label class="block text-sm font-medium mb-1">Referral Code (Optional)</label>
+                                        <input type="text" id="referral_code" class="input-field w-full px-4 py-3" placeholder="ABC123">
+                                    </div>
+                                    <button type="submit" id="auth-submit" class="btn-primary w-full py-3 rounded-xl font-semibold">Sign In</button>
+                                </form>
+
+                                <div class="mt-4 flex items-center justify-between text-sm">
+                                    <button id="toggle-auth-mode" class="text-violet-400 hover:text-violet-300 font-medium">Need an account? Sign Up</button>
+                                    <button id="google-login" class="flex items-center gap-2 px-4 py-2 border border-gray-600 rounded-lg hover:bg-gray-800 transition">
+                                        <svg class="w-4 h-4" viewBox="0 0 24 24"><path fill="#4285F4" d="M22.56 12.25c0-.78-.07-1.53-.2-2.25H12v4.26h5.92c-.26 1.37-1.04 2.53-2.21 3.31v2.77h3.57c2.08-1.92 3.28-4.74 3.28-8.09z"/><path fill="#34A853" d="M12 23c2.97 0 5.46-.98 7.28-2.66l-3.57-2.77c-.98.66-2.23 1.06-3.71 1.06-2.86 0-5.29-1.93-6.16-4.53H2.18v2.84C3.99 20.53 7.7 23 12 23z"/><path fill="#FBBC05" d="M5.84 14.09c-.22-.66-.35-1.36-.35-2.09s.13-1.43.35-2.09V7.07H2.18C1.43 8.55 1 10.22 1 12s.43 3.45 1.18 4.93l2.85-2.22.81-.62z"/><path fill="#EA4335" d="M12 5.38c1.62 0 3.06.56 4.21 1.64l3.15-3.15C17.45 2.09 14.97 1 12 1 7.7 1 3.99 3.47 2.18 7.07l3.66 2.84c.87-2.6 3.3-4.53 6.16-4.53z"/></svg>
+                                        <span>Google</span>
+                                    </button>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            `;
+        }
+
+        function initAuthListeners() {
+            let isLogin = true;
+            const form = $('#auth-form');
+            const toggleBtn = $('#toggle-auth-mode');
+            const submitBtn = $('#auth-submit');
+            const referralField = $('#referral-field');
+
+            toggleBtn.addEventListener('click', () => {
+                isLogin = !isLogin;
+                submitBtn.textContent = isLogin ? 'Sign In' : 'Sign Up';
+                toggleBtn.textContent = isLogin ? 'Need an account? Sign Up' : 'Already have an account? Sign In';
+                referralField.classList.toggle('hidden', isLogin);
+            });
+
+            $('#google-login').addEventListener('click', async () => {
+                await sb.auth.signInWithOAuth({ provider: 'google', options: { redirectTo: window.location.origin } });
+            });
+
+            form.addEventListener('submit', async (e) => {
+                e.preventDefault();
+                submitBtn.disabled = true;
+                submitBtn.innerHTML = '<div class="spinner mx-auto" style="width:20px;height:20px;border-width:3px;"></div>';
+                
+                const email = $('#email').value;
+                const password = $('#password').value;
+                const refCode = $('#referral_code').value;
+
+                try {
+                    if (isLogin) {
+                        const { data, error } = await sb.auth.signInWithPassword({ email, password });
+                        if (error) throw error;
+                        state.session = data.session;
+                        await loadProfile();
+                        window.location.hash = '/';
+                        router();
+                    } else {
+                        const { data, error } = await sb.auth.signUp({ email, password });
+                        if (error) throw error;
+                        
+                        state.session = data.session;
+                        // Call backend to create user profile
+                        await api('/auth/register', 'POST', { email, referral_code: refCode });
+                        await loadProfile();
+                        window.location.hash = '/';
+                        router();
+                    }
+                } catch (err) {
+                    showToast(err.message, 'error');
+                    submitBtn.disabled = false;
+                    submitBtn.textContent = isLogin ? 'Sign In' : 'Sign Up';
+                }
+            });
+        }
+
+        // --- ONBOARDING VIEW ---
+        function renderOnboarding() {
+            return `
+                <div class="min-h-screen flex items-center justify-center p-6">
+                    <div class="w-full max-w-lg card p-8">
+                        <h2 class="text-2xl font-bold mb-6">Welcome to NexConnect! 🚀</h2>
+                        <p class="text-gray-400 mb-8">Let's setup your profile. Choose your account type to continue.</p>
+                        
+                        <div class="space-y-6">
+                            <div>
+                                <label class="block text-sm font-medium mb-2">Account Type</label>
+                                <div class="grid grid-cols-2 gap-4">
+                                    <button id="role-creator" class="role-btn p-4 border-2 border-violet-500 rounded-xl text-left bg-violet-500/10">
+                                        <i data-lucide="video" class="w-6 h-6 mb-2 text-violet-400"></i>
+                                        <h3 class="font-semibold">Content Creator</h3>
+                                        <p class="text-xs text-gray-400">Access to all monetization tools</p>
+                                    </button>
+                                    <button id="role-normal" class="role-btn p-4 border-2 border-gray-700 rounded-xl text-left hover:border-gray-500">
+                                        <i data-lucide="user" class="w-6 h-6 mb-2 text-gray-400"></i>
+                                        <h3 class="font-semibold">Normal User</h3>
+                                        <p class="text-xs text-gray-400">Basic affiliate features</p>
+                                    </button>
+                                </div>
+                            </div>
+
+                            <div id="creator-fields" class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">YouTube Link</label>
+                                    <input type="url" id="yt_link" class="input-field w-full px-4 py-3" placeholder="https://youtube.com/@you">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Instagram Link</label>
+                                    <input type="url" id="ig_link" class="input-field w-full px-4 py-3" placeholder="https://instagram.com/you">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Total Followers (Approx)</label>
+                                    <input type="number" id="followers" class="input-field w-full px-4 py-3" placeholder="10000">
+                                </div>
+                            </div>
+
+                            <button id="complete-onboarding" class="btn-primary w-full py-3 rounded-xl font-semibold">Complete Setup</button>
+                        </div>
+                    </div>
+                </div>
+                <script>
+                    let selectedRole = 'influencer';
+                    $('#role-creator').addEventListener('click', () => {
+                        selectedRole = 'influencer';
+                        $('#role-creator').classList.add('border-violet-500', 'bg-violet-500/10');
+                        $('#role-creator').classList.remove('border-gray-700');
+                        $('#role-normal').classList.remove('border-violet-500', 'bg-violet-500/10');
+                        $('#role-normal').classList.add('border-gray-700');
+                        $('#creator-fields').classList.remove('hidden');
+                    });
+                    $('#role-normal').addEventListener('click', () => {
+                        selectedRole = 'normal_user';
+                        $('#role-normal').classList.add('border-violet-500', 'bg-violet-500/10');
+                        $('#role-normal').classList.remove('border-gray-700');
+                        $('#role-creator').classList.remove('border-violet-500', 'bg-violet-500/10');
+                        $('#role-creator').classList.add('border-gray-700');
+                        $('#creator-fields').classList.add('hidden');
+                    });
+                    $('#complete-onboarding').addEventListener('click', async () => {
+                        try {
+                            const payload = { role: selectedRole };
+                            if(selectedRole === 'influencer') {
+                                payload.youtube_link = $('#yt_link').value || null;
+                                payload.instagram_link = $('#ig_link').value || null;
+                                payload.follower_count = parseInt($('#followers').value) || 0;
+                            }
+                            await api('/users/profile', 'PUT', payload);
+                            state.profile = await api('/users/profile');
+                            window.location.hash = '/';
+                            router();
+                        } catch (err) { showToast(err.message, 'error'); }
+                    });
+                </${'script'}>
+            `;
+        }
+
+        // --- LAYOUT & NAVBAR ---
+        function renderLayout(path) {
+            const isActive = (p) => path === p || (p !== '/' && path.startsWith(p)) ? 'active text-violet-400' : '';
+            const isAdmin = state.profile.role === 'admin';
+            
+            return `
+                <nav class="sticky top-0 z-50 backdrop-blur-lg bg-[var(--bg-primary)]/80 border-b border-[var(--border)]">
+                    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
+                        <div class="flex justify-between items-center h-16">
+                            <div class="flex items-center gap-8">
+                                <a href="#/" class="flex items-center gap-2">
+                                    <i data-lucide="zap" class="w-6 h-6 text-violet-500"></i>
+                                    <span class="text-xl font-bold gradient-text hidden sm:block" style="font-family:'Sora'">NexConnect</span>
+                                </a>
+                                <div class="hidden md:flex items-center gap-6">
+                                    <a href="#/" class="nav-link ${isActive('/')} flex items-center gap-1 text-sm font-medium"><i data-lucide="home" class="w-4 h-4"></i> Home</a>
+                                    <a href="#/dashboard" class="nav-link ${isActive('/dashboard')} flex items-center gap-1 text-sm font-medium"><i data-lucide="layout-dashboard" class="w-4 h-4"></i> Dashboard</a>
+                                    <a href="#/withdraw" class="nav-link ${isActive('/withdraw')} flex items-center gap-1 text-sm font-medium"><i data-lucide="wallet" class="w-4 h-4"></i> Withdraw</a>
+                                    <a href="#/referrals" class="nav-link ${isActive('/referrals')} flex items-center gap-1 text-sm font-medium"><i data-lucide="users" class="w-4 h-4"></i> Referrals</a>
+                                    <a href="#/support" class="nav-link ${isActive('/support')} flex items-center gap-1 text-sm font-medium"><i data-lucide="life-buoy" class="w-4 h-4"></i> Support</a>
+                                    ${isAdmin ? `<a href="#/admin" class="nav-link text-rose-400 flex items-center gap-1 text-sm font-medium"><i data-lucide="shield" class="w-4 h-4"></i> Admin</a>` : ''}
+                                </div>
+                            </div>
+                            <div class="flex items-center gap-4">
+                                <div class="relative">
+                                    <button id="notif-btn" class="relative p-2 rounded-lg hover:bg-[var(--bg-tertiary)]">
+                                        <i data-lucide="bell" id="notif-bell" class="w-5 h-5"></i>
+                                    </button>
+                                    <div id="notif-dropdown" class="hidden absolute right-0 mt-2 w-80 card max-h-96 overflow-y-auto z-50">
+                                        <div class="p-3 border-b border-[var(--border)] font-semibold">Notifications</div>
+                                        <div id="notif-list"></div>
+                                    </div>
+                                </div>
+                                <div class="relative">
+                                    <button id="profile-btn" class="flex items-center gap-2 p-1 pr-3 rounded-full hover:bg-[var(--bg-tertiary)]">
+                                        <div class="w-8 h-8 rounded-full bg-gradient-to-br from-violet-500 to-indigo-500 flex items-center justify-center font-bold text-sm">${state.profile.email[0].toUpperCase()}</div>
+                                        <span class="text-sm font-medium hidden sm:block">${state.profile.email.split('@')[0]}</span>
+                                    </button>
+                                    <div id="profile-dropdown" class="hidden absolute right-0 mt-2 w-56 card p-2 z-50">
+                                        <div class="px-3 py-2 border-b border-[var(--border)] mb-1">
+                                            <div class="text-sm font-medium truncate">${state.profile.email}</div>
+                                            <div class="text-xs text-violet-400 capitalize">${state.profile.role.replace('_', ' ')}</div>
+                                        </div>
+                                        <a href="#/bookmarks" class="flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-sm"><i data-lucide="bookmark" class="w-4 h-4"></i> Bookmarks</a>
+                                        <button id="theme-toggle" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-sm"><i data-lucide="moon" class="w-4 h-4"></i> Toggle Theme</button>
+                                        <button id="logout-btn" class="w-full flex items-center gap-2 px-3 py-2 rounded-lg hover:bg-[var(--bg-tertiary)] text-sm text-rose-400"><i data-lucide="log-out" class="w-4 h-4"></i> Logout</button>
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                </nav>
+                <main id="main-content" class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8"></main>
+            `;
+        }
+
+        function initLayoutListeners() {
+            // Dropdowns
+            $('#profile-btn').addEventListener('click', () => $('#profile-dropdown').classList.toggle('hidden'));
+            $('#notif-btn').addEventListener('click', () => {
+                $('#notif-dropdown').classList.toggle('hidden');
+                renderNotificationsList();
+            });
+            document.addEventListener('click', (e) => {
+                if(!e.target.closest('#profile-btn')) $('#profile-dropdown').classList.add('hidden');
+                if(!e.target.closest('#notif-btn')) $('#notif-dropdown').classList.add('hidden');
+            });
+
+            $('#logout-btn').addEventListener('click', async () => {
+                await sb.auth.signOut();
+                state.session = null;
+                state.profile = null;
+                window.location.hash = '/';
+                router();
+            });
+
+            $('#theme-toggle').addEventListener('click', () => {
+                const html = document.documentElement;
+                const newTheme = html.getAttribute('data-theme') === 'dark' ? 'light' : 'dark';
+                html.setAttribute('data-theme', newTheme);
+                localStorage.setItem('theme', newTheme);
+            });
+            
+            // Apply saved theme
+            const savedTheme = localStorage.getItem('theme');
+            if(savedTheme) document.documentElement.setAttribute('data-theme', savedTheme);
+        }
+
+        function renderNotificationsList() {
+            const list = $('#notif-list');
+            if(state.notifications.length === 0) {
+                list.innerHTML = `<div class="p-4 text-center text-gray-400 text-sm">No notifications</div>`;
+                return;
+            }
+            list.innerHTML = state.notifications.map(n => `
+                <div class="p-3 border-b border-[var(--border)] hover:bg-[var(--bg-tertiary)] cursor-pointer ${!n.is_read ? 'bg-violet-500/5' : ''}" onclick="markNotifRead('${n.id}')">
+                    <div class="flex items-start gap-2">
+                        <i data-lucide="bell" class="w-4 h-4 mt-1 text-violet-400"></i>
+                        <div>
+                            <p class="text-sm">${n.message}</p>
+                            <p class="text-xs text-gray-500 mt-1">${new Date(n.created_at).toLocaleString()}</p>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+            lucide.createIcons();
+        }
+
+        async function markNotifRead(id) {
+            try {
+                await api(`/notifications/${id}/read`, 'PUT');
+                state.notifications = state.notifications.map(n => n.id === id ? {...n, is_read: true} : n);
+                renderNotificationsList();
+                updateNotificationBell();
+            } catch(e) { console.error(e) }
+        }
+
+        // --- HOME / PRODUCT FEED ---
+        async function renderHome() {
+            const main = $('#main-content');
+            main.innerHTML = `<div class="spinner mx-auto my-20"></div>`;
+            try {
+                const products = await api('/products');
+                const s = state.settings;
+                
+                main.innerHTML = `
+                    ${s && s.hero_banner_url ? `
+                    <div class="rounded-3xl overflow-hidden mb-12 relative h-64 md:h-80">
+                        <img src="${s.hero_banner_url}" class="w-full h-full object-cover">
+                        <div class="absolute inset-0 bg-gradient-to-t from-black/80 to-transparent flex flex-col justify-end p-8">
+                            <h1 class="text-4xl font-extrabold text-white mb-2">${s.hero_title || 'Welcome to NexConnect'}</h1>
+                            <p class="text-lg text-gray-200">${s.hero_subtitle || 'Start earning today'}</p>
+                        </div>
+                    </div>
+                    ` : ''}
+                    
+                    <div class="flex flex-col md:flex-row gap-4 mb-8">
+                        <div class="flex-1 relative">
+                            <i data-lucide="search" class="absolute left-4 top-1/2 -translate-y-1/2 w-5 h-5 text-gray-400"></i>
+                            <input type="text" id="search-input" placeholder="Search products..." class="input-field w-full pl-12 pr-4 py-3">
+                        </div>
+                        <select id="filter-category" class="input-field px-4 py-3 md:w-48">
+                            <option value="">All Categories</option>
+                            <option value="electronics">Electronics</option>
+                            <option value="fashion">Fashion</option>
+                            <option value="digital">Digital Goods</option>
+                        </select>
+                    </div>
+
+                    <div id="products-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6"></div>
+                `;
+                
+                renderProductCards(products);
+                
+                $('#search-input').addEventListener('input', async (e) => {
+                    const q = e.target.value;
+                    const filtered = await api(`/products?search=${q}`);
+                    renderProductCards(filtered);
+                });
+                $('#filter-category').addEventListener('change', async (e) => {
+                    const c = e.target.value;
+                    const filtered = await api(`/products?category=${c}`);
+                    renderProductCards(filtered);
+                });
+
+                lucide.createIcons();
+            } catch (err) {
+                main.innerHTML = `<div class="text-center text-rose-400">${err.message}</div>`;
+            }
+        }
+
+        function renderProductCards(products) {
+            const grid = $('#products-grid');
+            if(products.length === 0) {
+                grid.innerHTML = `<div class="col-span-full text-center py-12 text-gray-400">No products found.</div>`;
+                return;
+            }
+            grid.innerHTML = products.map(p => `
+                <div class="card overflow-hidden group transition hover:-translate-y-1 duration-300">
+                    <div class="relative h-48 overflow-hidden">
+                        <img src="${p.image_url}" class="w-full h-full object-cover group-hover:scale-105 transition duration-300">
+                        <div class="absolute top-2 right-2 bg-emerald-500 text-white text-xs font-bold px-2 py-1 rounded-full">₹${p.commission_amount} Commission</div>
+                    </div>
+                    <div class="p-4">
+                        <h3 class="font-bold text-lg mb-1 truncate">${p.title}</h3>
+                        <div class="flex flex-wrap gap-1 mb-3">
+                            ${p.tags?.slice(0,2).map(t => `<span class="badge bg-violet-500/20 text-violet-300">${t}</span>`).join('') || ''}
+                        </div>
+                        <div class="flex items-center justify-between mb-4">
+                            <div>
+                                <span class="text-lg font-bold">₹${p.sales_price}</span>
+                                <span class="text-xs text-gray-400 line-through ml-1">₹${p.real_price}</span>
+                            </div>
+                        </div>
+                        <div class="flex gap-2">
+                            <a href="#/product/${p.id}" class="flex-1 text-center py-2 rounded-lg border border-[var(--border)] hover:bg-[var(--bg-tertiary)] text-sm font-medium">Details</a>
+                            <button onclick="getMyLink('${p.id}')" class="flex-1 py-2 rounded-lg btn-primary text-sm font-medium">Get Link</button>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        async function getMyLink(productId) {
+            try {
+                const res = await api('/links/generate', 'POST', { product_id: productId });
+                const fullLink = `https://myapp.vercel.app/go/${res.short_code}`;
+                await navigator.clipboard.writeText(fullLink);
+                showToast('Link copied to clipboard!');
+            } catch(err) { showToast(err.message, 'error'); }
+        }
+
+        // --- PRODUCT DETAIL ---
+        async function renderProductDetail(id) {
+            const main = $('#main-content');
+            main.innerHTML = `<div class="spinner mx-auto my-20"></div>`;
+            try {
+                const product = await api(`/products/${id}`);
+                const similar = await api(`/products/${id}/similar`);
+                
+                main.innerHTML = `
+                    <div class="grid md:grid-cols-2 gap-8 mb-12">
+                        <div class="rounded-2xl overflow-hidden h-96 card">
+                            <img src="${product.image_url}" class="w-full h-full object-cover">
+                        </div>
+                        <div>
+                            <div class="flex flex-wrap gap-2 mb-4">
+                                ${product.tags?.map(t => `<span class="badge bg-violet-500/20 text-violet-300">${t}</span>`).join('') || ''}
+                            </div>
+                            <h1 class="text-3xl font-bold mb-4">${product.title}</h1>
+                            <p class="text-gray-400 mb-6">${product.description || 'No description available.'}</p>
+                            
+                            <div class="flex items-center gap-4 mb-8">
+                                <div class="text-3xl font-bold">₹${product.sales_price}</div>
+                                <div class="text-xl text-gray-500 line-through">₹${product.real_price}</div>
+                                <div class="ml-auto bg-emerald-500/20 text-emerald-400 px-4 py-2 rounded-lg font-bold">You earn: ₹${product.commission_amount}</div>
+                            </div>
+
+                            <div class="card p-4 mb-6">
+                                <h4 class="font-semibold mb-2 flex items-center gap-2"><i data-lucide="link" class="w-4 h-4"></i> Your Unique Link</h4>
+                                <div class="flex gap-2">
+                                    <input type="text" id="aff-link" class="input-field flex-1 px-3 py-2 mono text-xs" value="Click Get Link to generate" readonly>
+                                    <button id="gen-link-btn" onclick="getMyLink('${product.id}')" class="btn-primary px-4 py-2 rounded-lg text-sm font-medium">Get Link</button>
+                                </div>
+                            </div>
+
+                            <div class="flex gap-2">
+                                <button onclick="shareWhatsApp('${product.title}')" class="p-3 rounded-lg bg-[var(--bg-tertiary)] hover:bg-green-500/20"><i data-lucide="message-circle" class="w-5 h-5"></i></button>
+                                <button onclick="shareTelegram('${product.title}')" class="p-3 rounded-lg bg-[var(--bg-tertiary)] hover:bg-blue-500/20"><i data-lucide="send" class="w-5 h-5"></i></button>
+                                <button onclick="addBookmark('${product.id}')" class="p-3 rounded-lg bg-[var(--bg-tertiary)] hover:bg-violet-500/20"><i data-lucide="bookmark" class="w-5 h-5"></i></button>
+                            </div>
+                        </div>
+                    </div>
+
+                    <div class="grid md:grid-cols-2 gap-8 mb-12">
+                        <div class="card p-6">
+                            <h3 class="text-xl font-bold mb-4">Promotional Toolkit</h3>
+                            <div class="space-y-4">
+                                <div>
+                                    <label class="text-sm font-medium text-gray-400">Captions</label>
+                                    <textarea class="input-field w-full p-3 mt-1 text-sm h-24" readonly>${product.captions?.join('\n') || 'N/A'}</textarea>
+                                    <button onclick="copyText('${product.captions?.join('\\n') || 'N/A'}')" class="text-xs text-violet-400 mt-1">Copy</button>
+                                </div>
+                                <div>
+                                    <label class="text-sm font-medium text-gray-400">Hashtags</label>
+                                    <textarea class="input-field w-full p-3 mt-1 text-sm h-16" readonly>${product.hashtags?.join(' ') || 'N/A'}</textarea>
+                                    <button onclick="copyText('${product.hashtags?.join(' ') || 'N/A'}')" class="text-xs text-violet-400 mt-1">Copy</button>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card p-6">
+                            <h3 class="text-xl font-bold mb-4">Similar Products</h3>
+                            <div class="space-y-3">
+                                ${similar.map(s => `
+                                    <a href="#/product/${s.id}" class="flex items-center gap-4 p-2 rounded-lg hover:bg-[var(--bg-tertiary)]">
+                                        <img src="${s.image_url}" class="w-12 h-12 rounded-lg object-cover">
+                                        <div>
+                                            <div class="font-medium text-sm">${s.title}</div>
+                                            <div class="text-xs text-emerald-400">₹${s.commission_amount} commission</div>
+                                        </div>
+                                    </a>
+                                `).join('') || '<div class="text-gray-400 text-sm">No similar products</div>'}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                lucide.createIcons();
+            } catch(err) {
+                main.innerHTML = `<div class="text-center text-rose-400">${err.message}</div>`;
+            }
+        }
+
+        function copyText(text) {
+            navigator.clipboard.writeText(text);
+            showToast('Copied to clipboard!');
+        }
+
+        function shareWhatsApp(title) {
+            const link = $('#aff-link').value;
+            if(link.includes('Click Get')) return showToast('Generate link first!', 'error');
+            window.open(`https://wa.me/?text=${encodeURIComponent(title + ' ' + link)}`, '_blank');
+        }
+        function shareTelegram(title) {
+            const link = $('#aff-link').value;
+            if(link.includes('Click Get')) return showToast('Generate link first!', 'error');
+            window.open(`https://t.me/share/url?url=${encodeURIComponent(link)}&text=${encodeURIComponent(title)}`, '_blank');
+        }
+
+        async function addBookmark(id) {
+            try {
+                await api('/bookmarks', 'POST', { product_id: id });
+                showToast('Bookmarked!');
+            } catch(e) { showToast(e.message, 'error'); }
+        }
+
+        // --- DASHBOARD ---
+        async function renderDashboard() {
+            const main = $('#main-content');
+            main.innerHTML = `<div class="spinner mx-auto my-20"></div>`;
+            try {
+                const stats = await api('/clicks/stats');
+                const clicks = await api('/clicks');
+                
+                main.innerHTML = `
+                    <h1 class="text-3xl font-bold mb-8">Dashboard</h1>
+                    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-8">
+                        <div class="card p-5">
+                            <div class="text-gray-400 text-sm mb-1">Total Clicks</div>
+                            <div class="text-2xl font-bold">${stats.total_clicks || 0}</div>
+                        </div>
+                        <div class="card p-5">
+                            <div class="text-gray-400 text-sm mb-1">Total Earnings</div>
+                            <div class="text-2xl font-bold text-emerald-400">₹${state.profile.total_earnings || 0}</div>
+                        </div>
+                        <div class="card p-5">
+                            <div class="text-gray-400 text-sm mb-1">Referral Earnings</div>
+                            <div class="text-2xl font-bold text-violet-400">₹${state.profile.referral_earnings || 0}</div>
+                        </div>
+                        <div class="card p-5">
+                            <div class="text-gray-400 text-sm mb-1">Conversion Rate</div>
+                            <div class="text-2xl font-bold">${stats.conversion_rate || 0}%</div>
+                        </div>
+                    </div>
+
+                    <div class="grid md:grid-cols-3 gap-6 mb-8">
+                        <div class="md:col-span-2 card p-6">
+                            <h3 class="font-bold mb-4">Click Performance (Last 7 Days)</h3>
+                            <canvas id="clicksChart" height="100"></canvas>
+                        </div>
+                        <div class="card p-6">
+                            <h3 class="font-bold mb-4">Top Performer</h3>
+                            ${stats.top_product ? `
+                                <img src="${stats.top_product.image_url}" class="w-full h-32 object-cover rounded-lg mb-3">
+                                <div class="font-semibold">${stats.top_product.title}</div>
+                                <div class="text-sm text-emerald-400">${stats.top_product.clicks} clicks</div>
+                            ` : '<div class="text-gray-400 text-sm">No data yet</div>'}
+                        </div>
+                    </div>
+
+                    <div class="card p-6">
+                        <h3 class="font-bold mb-4">Recent Clicks</h3>
+                        <div class="overflow-x-auto">
+                            <table class="w-full text-sm">
+                                <thead>
+                                    <tr class="text-left text-gray-400 border-b border-[var(--border)]">
+                                        <th class="pb-2">Product</th>
+                                        <th class="pb-2">Date</th>
+                                        <th class="pb-2">IP Address</th>
+                                    </tr>
+                                </thead>
+                                <tbody>
+                                    ${clicks.slice(0,5).map(c => `
+                                        <tr class="border-b border-[var(--border)]">
+                                            <td class="py-3">${c.product?.title || 'Unknown'}</td>
+                                            <td class="py-3">${new Date(c.created_at).toLocaleString()}</td>
+                                            <td class="py-3 mono text-xs">${c.ip_address}</td>
+                                        </tr>
+                                    `).join('') || '<tr><td colspan="3" class="py-4 text-center text-gray-400">No clicks yet</td></tr>'}
+                                </tbody>
+                            </table>
+                        </div>
+                    </div>
+                `;
+
+                // Render Chart
+                const ctx = $('#clicksChart').getContext('2d');
+                const labels = stats.weekly_data?.map(d => d.date) || [];
+                const data = stats.weekly_data?.map(d => d.count) || [];
+                new Chart(ctx, {
+                    type: 'line',
+                    data: {
+                        labels,
+                        datasets: [{
+                            label: 'Clicks',
+                            data,
+                            borderColor: '#7C3AED',
+                            backgroundColor: 'rgba(124, 58, 237, 0.1)',
+                            fill: true,
+                            tension: 0.4
+                        }]
+                    },
+                    options: { scales: { y: { beginAtZero: true, ticks: { color: '#a0a0b0' } }, x: { ticks: { color: '#a0a0b0' } } }, plugins: { legend: { display: false } } }
+                });
+                lucide.createIcons();
+            } catch(err) {
+                main.innerHTML = `<div class="text-center text-rose-400">${err.message}</div>`;
+            }
+        }
+
+        // --- WITHDRAW PAGE ---
+        async function renderWithdraw() {
+            const main = $('#main-content');
+            main.innerHTML = `<div class="spinner mx-auto my-20"></div>`;
+            try {
+                const withdrawals = await api('/withdrawals');
+                const minW = state.settings?.min_withdrawal || 100;
+                
+                main.innerHTML = `
+                    <h1 class="text-3xl font-bold mb-8">Withdrawals</h1>
+                    <div class="grid md:grid-cols-2 gap-6">
+                        <div class="card p-6">
+                            <div class="mb-6">
+                                <div class="text-gray-400 text-sm">Available Balance</div>
+                                <div class="text-4xl font-bold text-emerald-400">₹${state.profile.balance || 0}</div>
+                            </div>
+                            <form id="withdraw-form" class="space-y-4">
+                                <div>
+                                    <label class="block text-sm font-medium mb-1">Amount (Min: ₹${minW})</label>
+                                    <input type="number" id="w_amount" min="${minW}" required class="input-field w-full px-4 py-3">
+                                </div>
+                                <div>
+                                    <label class="block text-sm font-medium mb-2">Method</label>
+                                    <div class="grid grid-cols-2 gap-2">
+                                        <button type="button" id="m-upi" class="method-btn p-3 border-2 border-violet-500 rounded-lg text-sm">UPI</button>
+                                        <button type="button" id="m-bank" class="method-btn p-3 border-2 border-gray-700 rounded-lg text-sm">Bank Transfer</button>
+                                    </div>
+                                </div>
+                                <div id="upi-fields" class="space-y-4">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">UPI ID</label>
+                                        <input type="text" id="upi_id" class="input-field w-full px-4 py-3" placeholder="name@bank">
+                                    </div>
+                                </div>
+                                <div id="bank-fields" class="space-y-4 hidden">
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Account Holder Name</label>
+                                        <input type="text" id="bank_holder" class="input-field w-full px-4 py-3">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">Account Number</label>
+                                        <input type="text" id="bank_account" class="input-field w-full px-4 py-3">
+                                    </div>
+                                    <div>
+                                        <label class="block text-sm font-medium mb-1">IFSC Code</label>
+                                        <input type="text" id="bank_ifsc" class="input-field w-full px-4 py-3">
+                                    </div>
+                                </div>
+                                <button type="submit" class="btn-primary w-full py-3 rounded-xl font-semibold">Request Withdrawal</button>
+                            </form>
+                        </div>
+                        <div class="card p-6">
+                            <h3 class="font-bold mb-4">History</h3>
+                            <div class="space-y-3 max-h-96 overflow-y-auto">
+                                ${withdrawals.map(w => `
+                                    <div class="p-3 rounded-lg bg-[var(--bg-tertiary)]">
+                                        <div class="flex justify-between mb-1">
+                                            <span class="font-bold">₹${w.amount}</span>
+                                            <span class="badge ${w.status === 'approved' ? 'bg-emerald-500/20 text-emerald-400' : w.status === 'rejected' ? 'bg-rose-500/20 text-rose-400' : 'bg-yellow-500/20 text-yellow-400'}">${w.status}</span>
+                                        </div>
+                                        <div class="text-xs text-gray-400">${new Date(w.created_at).toLocaleString()} • ${w.method}</div>
+                                    </div>
+                                `).join('') || '<div class="text-gray-400 text-sm">No withdrawals yet</div>'}
+                            </div>
+                        </div>
+                    </div>
+                `;
+
+                let method = 'upi';
+                $('#m-upi').addEventListener('click', () => {
+                    method = 'upi';
+                    $('#upi-fields').classList.remove('hidden');
+                    $('#bank-fields').classList.add('hidden');
+                    $('#m-upi').classList.add('border-violet-500');
+                    $('#m-bank').classList.remove('border-violet-500'); $('#m-bank').classList.add('border-gray-700');
+                });
+                $('#m-bank').addEventListener('click', () => {
+                    method = 'bank';
+                    $('#bank-fields').classList.remove('hidden');
+                    $('#upi-fields').classList.add('hidden');
+                    $('#m-bank').classList.add('border-violet-500');
+                    $('#m-upi').classList.remove('border-violet-500'); $('#m-upi').classList.add('border-gray-700');
+                });
+
+                $('#withdraw-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    const payload = { amount: parseFloat($('#w_amount').value), method };
+                    if(method === 'upi') payload.upi_id = $('#upi_id').value;
+                    else {
+                        payload.bank_holder = $('#bank_holder').value;
+                        payload.bank_account = $('#bank_account').value;
+                        payload.bank_ifsc = $('#bank_ifsc').value;
+                    }
+                    try {
+                        await api('/withdrawals', 'POST', payload);
+                        showToast('Withdrawal requested!');
+                        state.profile = await api('/users/profile');
+                        renderWithdraw();
+                    } catch(err) { showToast(err.message, 'error'); }
+                });
+                lucide.createIcons();
+            } catch(err) {
+                main.innerHTML = `<div class="text-center text-rose-400">${err.message}</div>`;
+            }
+        }
+
+        // --- REFERRALS PAGE ---
+        async function renderReferrals() {
+            const main = $('#main-content');
+            main.innerHTML = `<div class="spinner mx-auto my-20"></div>`;
+            try {
+                const refs = await api('/referrals');
+                const refLink = `https://myapp.vercel.app/#/auth?ref=${state.profile.referral_code}`;
+                
+                main.innerHTML = `
+                    <h1 class="text-3xl font-bold mb-8">Referrals</h1>
+                    <div class="grid md:grid-cols-2 gap-6">
+                        <div class="card p-6">
+                            <h3 class="font-bold mb-4">Your Referral Code</h3>
+                            <div class="flex gap-2 mb-4">
+                                <input type="text" value="${state.profile.referral_code}" class="input-field flex-1 px-4 py-3 mono text-center font-bold" readonly>
+                                <button onclick="copyText('${state.profile.referral_code}')" class="btn-primary px-4 py-2 rounded-lg">Copy</button>
+                            </div>
+                            <div class="flex gap-2">
+                                <input type="text" value="${refLink}" id="ref-link" class="input-field flex-1 px-4 py-3 mono text-xs" readonly>
+                                <button onclick="copyText(document.getElementById('ref-link').value)" class="btn-primary px-4 py-2 rounded-lg">Copy Link</button>
+                            </div>
+                            <div class="mt-6 grid grid-cols-2 gap-4">
+                                <div class="p-4 rounded-lg bg-[var(--bg-tertiary)]">
+                                    <div class="text-sm text-gray-400">Total Referred</div>
+                                    <div class="text-xl font-bold">${refs.stats?.total_referred || 0}</div>
+                                </div>
+                                <div class="p-4 rounded-lg bg-[var(--bg-tertiary)]">
+                                    <div class="text-sm text-gray-400">Total Earned</div>
+                                    <div class="text-xl font-bold text-emerald-400">₹${refs.stats?.total_earned || 0}</div>
+                                </div>
+                            </div>
+                        </div>
+                        <div class="card p-6">
+                            <h3 class="font-bold mb-4">Referred Users</h3>
+                            <div class="space-y-3 max-h-96 overflow-y-auto">
+                                ${refs.users?.map(u => `
+                                    <div class="flex items-center gap-3 p-3 rounded-lg bg-[var(--bg-tertiary)]">
+                                        <div class="w-8 h-8 rounded-full bg-violet-500/20 flex items-center justify-center text-violet-400 font-bold">${u.email[0]}</div>
+                                        <div class="flex-1 truncate">${u.email}</div>
+                                        <div class="text-xs text-gray-400">${new Date(u.created_at).toLocaleDateString()}</div>
+                                    </div>
+                                `).join('') || '<div class="text-gray-400 text-sm">No referrals yet</div>'}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                lucide.createIcons();
+            } catch(err) {
+                main.innerHTML = `<div class="text-center text-rose-400">${err.message}</div>`;
+            }
+        }
+
+        // --- BOOKMARKS PAGE ---
+        async function renderBookmarks() {
+            const main = $('#main-content');
+            main.innerHTML = `<div class="spinner mx-auto my-20"></div>`;
+            try {
+                const bookmarks = await api('/bookmarks');
+                main.innerHTML = `
+                    <h1 class="text-3xl font-bold mb-8">Bookmarks</h1>
+                    <div id="products-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-6">
+                        ${bookmarks.map(b => b.product).map(p => `
+                            <div class="card overflow-hidden group">
+                                <div class="relative h-48 overflow-hidden">
+                                    <img src="${p.image_url}" class="w-full h-full object-cover">
+                                </div>
+                                <div class="p-4">
+                                    <h3 class="font-bold mb-1 truncate">${p.title}</h3>
+                                    <div class="text-emerald-400 text-sm mb-3">Earn ₹${p.commission_amount}</div>
+                                    <a href="#/product/${p.id}" class="block text-center py-2 rounded-lg btn-primary text-sm font-medium">View Product</a>
+                                </div>
+                            </div>
+                        `).join('') || '<div class="col-span-full text-center py-12 text-gray-400">No bookmarks yet.</div>'}
+                    </div>
+                `;
+            } catch(err) { main.innerHTML = `<div class="text-center text-rose-400">${err.message}</div>`; }
+        }
+
+        // --- SUPPORT PAGE ---
+        async function renderSupport() {
+            const main = $('#main-content');
+            main.innerHTML = `<div class="spinner mx-auto my-20"></div>`;
+            try {
+                const msgs = await api('/support');
+                main.innerHTML = `
+                    <h1 class="text-3xl font-bold mb-8">Support</h1>
+                    <div class="grid md:grid-cols-2 gap-6">
+                        <div class="card p-6">
+                            <h3 class="font-bold mb-4">Send a Message</h3>
+                            <form id="support-form" class="space-y-4">
+                                <textarea id="support-msg" required class="input-field w-full p-4 h-32" placeholder="How can we help?"></textarea>
+                                <button type="submit" class="btn-primary w-full py-3 rounded-xl font-semibold">Send</button>
+                            </form>
+                            <div class="mt-6 pt-6 border-t border-[var(--border)]">
+                                <div class="text-sm text-gray-400">Email us at:</div>
+                                <a href="mailto:${state.settings?.support_email || 'support@nexconnect.com'}" class="text-violet-400">${state.settings?.support_email || 'support@nexconnect.com'}</a>
+                            </div>
+                        </div>
+                        <div class="card p-6">
+                            <h3 class="font-bold mb-4">History</h3>
+                            <div class="space-y-4 max-h-96 overflow-y-auto">
+                                ${msgs.map(m => `
+                                    <div class="p-4 rounded-lg ${m.is_from_admin ? 'bg-violet-500/10' : 'bg-[var(--bg-tertiary)]'}">
+                                        <div class="text-xs text-gray-400 mb-1">${m.is_from_admin ? 'Admin' : 'You'} • ${new Date(m.created_at).toLocaleString()}</div>
+                                        <p class="text-sm">${m.message}</p>
+                                        ${m.reply ? `<div class="mt-2 pt-2 border-t border-[var(--border)] text-sm"><b>Reply:</b> ${m.reply}</div>` : ''}
+                                    </div>
+                                `).join('') || '<div class="text-gray-400 text-sm">No messages</div>'}
+                            </div>
+                        </div>
+                    </div>
+                `;
+                $('#support-form').addEventListener('submit', async (e) => {
+                    e.preventDefault();
+                    try {
+                        await api('/support', 'POST', { message: $('#support-msg').value });
+                        showToast('Message sent!');
+                        renderSupport();
+                    } catch(err) { showToast(err.message, 'error'); }
+                });
+            } catch(err) { main.innerHTML = `<div class="text-center text-rose-400">${err.message}</div>`; }
+        }
+
+        // --- START APP ---
+        document.addEventListener('DOMContentLoaded', initApp);
+    </script>
+</body>
+</html>
