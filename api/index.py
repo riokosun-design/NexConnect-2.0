@@ -8,8 +8,12 @@ from flask_cors import CORS
 from supabase import create_client, Client
 from werkzeug.security import generate_password_hash, check_password_hash
 
+# Fix Vercel Path Issue
+BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+TEMPLATES_DIR = os.path.join(BASE_DIR, 'templates')
+
 # Initialize Flask
-app = Flask(__name__, template_folder='../templates', static_folder='../static')
+app = Flask(__name__, template_folder=TEMPLATES_DIR, static_folder=os.path.join(TEMPLATES_DIR, 'static'))
 CORS(app)
 
 # Supabase Init
@@ -40,7 +44,7 @@ def generate_short_code():
 def serve_spa(path):
     if path.startswith('api/') or path.startswith('go/'):
         return jsonify({"error": "Not found"}), 404
-    return send_from_directory('../templates', 'index.html')
+    return send_from_directory(TEMPLATES_DIR, 'index.html')
 
 # --- CONFIG ENDPOINT ---
 @app.route('/api/config')
